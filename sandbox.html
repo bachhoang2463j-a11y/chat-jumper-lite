@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>TH sandbox（模拟酒馆助手脚本运行环境）</title>
+</head>
+<body>
+<script>
+// IAB 中 rAF 可能被节流，用 setTimeout 垫片保证测试可跑（真实酒馆环境 rAF 原生可用）
+window.requestAnimationFrame = (fn) => setTimeout(() => fn(performance.now()), 16);
+</script>
+<script src="jump-lite.js"></script>
+</body>
+</html>

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Chat Jumper Lite 测试 harness（模拟酒馆父页面）</title>
+<style>
+  body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; }
+  #panel { width: 340px; padding: 12px; overflow-y: auto; border-right: 1px solid #ccc; }
+  #stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #extensionsMenu { border-bottom: 1px solid #999; padding: 6px; display: flex; gap: 8px; }
+  .extension_container .list-group-item { display: flex; gap: 6px; cursor: pointer; padding: 4px 8px; border: 1px solid #aaa; width: fit-content; }
+  #simplebar-wrapper { flex: 1; overflow-y: auto; border: 1px solid #666; }
+  #chat { display: flex; flex-direction: column; }
+  .mes { height: 120px; border-bottom: 1px solid #ddd; padding: 8px; box-sizing: border-box; flex: none; }
+  #log { white-space: pre-wrap; font-family: monospace; font-size: 12px; margin-top: 8px; }
+  button.t { display: block; width: 100%; margin: 4px 0; padding: 6px; }
+  .pass { color: green; } .fail { color: red; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <button class="t" onclick="runAll()">▶ 运行全部测试</button>
+  <div id="log"></div>
+</div>
+<div id="stage">
+  <div id="extensionsMenu"></div>
+  <div class="simplebar-content-wrapper" id="simplebar-wrapper">
+    <div id="chat"></div>
+  </div>
+</div>
+<iframe id="th-sandbox" src="sandbox.html" style="display:none"></iframe>
+<script>
+// ---- mock 数据与酒馆环境（2000 楼聊天）----
+const CHAT_LEN = 2000;
+const chat = Array.from({ length: CHAT_LEN }, (_, i) => ({
+  mes: `msg ${i}`, name: i % 2 ? 'User' : 'AI', is_user: i % 2 === 1,
+}));
+const state = { popupAnswer: '', confirmAnswer: 1, emitted: [], lastToast: null, reloads: 0 };
+
+function renderMes(id) {
+  const d = document.createElement('div');
+  d.className = 'mes';
+  d.setAttribute('mesid', String(id));
+  d.textContent = `#${id} ${chat[id].name}: ${chat[id].mes}`;
+  return d;
+}
+function addOneMessage(mes, options = {}) {
+  const id = options.forceId ?? 0;
+  const el = renderMes(id);
+  const chatEl = document.getElementById('chat');
+  if (options.insertBefore != null) {
+    const ref = chatEl.querySelector(`:scope > .mes[mesid="${options.insertBefore}"]`);
+    chatEl.insertBefore(el, ref);
+  } else {
+    chatEl.appendChild(el);
+  }
+}
+window.SillyTavern = {
+  POPUP_TYPE: { INPUT: 2, CONFIRM: 3 },
+  callGenericPopup: (content, type) => {
+    if (type === 3) return Promise.resolve(state.confirmAnswer);
+    return Promise.resolve(state.popupAnswer);
+  },
+  reloadCurrentChat: async () => {
+    state.reloads++;
+    const chatEl = document.getElementById('chat');
+    chatEl.replaceChildren();
+    for (let i = CHAT_LEN - 20; i < CHAT_LEN; i++) chatEl.appendChild(renderMes(i));
+  },
+  getContext: () => ({
+    chat,
+    addOneMessage,
+    powerUserSettings: { auto_scroll_chat_to_bottom: true },
+    eventSource: { emit: (t) => state.emitted.push(t) },
+    eventTypes: { MORE_MESSAGES_LOADED: 'more_messages_loaded' },
+    reloadCurrentChat: window.SillyTavern.reloadCurrentChat,
+  }),
+};
+window.toastr = {
+  info: m => state.lastToast = m, warning: m => state.lastToast = m,
+  error: m => state.lastToast = m, success: m => state.lastToast = m,
+};
+</script>
+<script>
+// ---- 测试用例 ----
+const logEl = document.getElementById('log');
+function log(msg, cls) {
+  const d = document.createElement('div');
+  d.textContent = msg;
+  if (cls) d.className = cls;
+  logEl.appendChild(d);
+}
+function assert(name, cond, detail) {
+  log(`${cond ? 'PASS' : 'FAIL'} ${name}${cond ? '' : ' —— ' + (detail ?? '')}`, cond ? 'pass' : 'fail');
+  return cond;
+}
+function displayed() {
+  const list = [...document.querySelectorAll('#chat > .mes')];
+  return {
+    count: list.length,
+    first: Number(list[0]?.getAttribute('mesid')),
+    last: Number(list.at(-1)?.getAttribute('mesid')),
+  };
+}
+function wrapper() { return document.getElementById('simplebar-wrapper'); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function clickJump() {
+  document.getElementById('stcj-lite-button').click();
+  await sleep(300);
+}
+async function wheelUp() {
+  wrapper().dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true }));
+  await sleep(400);
+}
+async function wheelDown() {
+  wrapper().scrollTo({ top: wrapper().scrollHeight });
+  await sleep(50);
+  wrapper().dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true }));
+  await sleep(400);
+}
+
+async function t1() {
+  log('--- T1 按钮注入 ---');
+  assert('扩展抽屉出现「跳转楼层」按钮', !!document.getElementById('stcj-lite-button'));
+}
+async function t2() {
+  log('--- T2 跳转楼层 500：重建 5 楼窗口 ---');
+  state.confirmAnswer = -1; state.popupAnswer = '500';
+  await clickJump();
+  const d = displayed();
+  assert('窗口首楼 = 500', d.first === 500, JSON.stringify(d));
+  assert('窗口末楼 = 504', d.last === 504);
+  assert('共 5 楼', d.count === 5);
+}
+async function t3() {
+  log('--- T3 向上滑动补齐 5 楼 ---');
+  await wheelUp();
+  const d = displayed();
+  assert('首楼 = 495', d.first === 495, JSON.stringify(d));
+  assert('共 10 楼', d.count === 10);
+  assert('触发 MORE_MESSAGES_LOADED', state.emitted.includes('more_messages_loaded'));
+}
+async function t4() {
+  log('--- T4 向下滑动补齐 5 楼 ---');
+  await wheelDown();
+  const d = displayed();
+  assert('末楼 = 509', d.last === 509, JSON.stringify(d));
+  assert('共 15 楼', d.count === 15);
+}
+async function t5() {
+  log('--- T5 越界输入 clamp 到最大楼 ---');
+  state.confirmAnswer = -1; state.popupAnswer = '99999';
+  await clickJump();
+  const d = displayed();
+  assert('首楼 = 1999', d.first === 1999, JSON.stringify(d));
+  assert('仅 1 楼', d.count === 1);
+}
+async function t6() {
+  log('--- T6 恢复完整显示 ---');
+  state.confirmAnswer = 1;
+  document.getElementById('stcj-lite-button').click();
+  await sleep(300);
+  const d = displayed();
+  assert('恢复尾部 20 楼', d.count === 20 && d.last === 1999, JSON.stringify(d));
+  assert('reloadCurrentChat 被调用', state.reloads >= 1);
+}
+
+async function runAll() {
+  logEl.innerHTML = '';
+  state.emitted = []; state.reloads = 0;
+  // 初始渲染尾部 20 楼，模拟酒馆原生 chat_truncation 截断
+  const chatEl = document.getElementById('chat');
+  chatEl.replaceChildren();
+  for (let i = CHAT_LEN - 20; i < CHAT_LEN; i++) chatEl.appendChild(renderMes(i));
+  await sleep(200);
+  for (const t of [t1, t2, t3, t4, t5, t6]) {
+    await t();
+    await sleep(100);
+  }
+  log('=== 测试完成 ===');
+}
+</script>
+</body>
+</html>
