@@ -19,6 +19,9 @@
   不像原生 `/chat-jump` 会一次性同步渲染中间所有楼层（2000 楼聊天会冻结数秒）。
 - 滑动补齐用「rAF 分帧 + 视口补偿」（参考 cocktail）：每帧 3 楼，向上补齐时逐帧补偿
   scrollTop，视口不跳；每批结束 emit `MORE_MESSAGES_LOADED` 兼容其他扫描型插件。
+- 跳转/补齐插楼后逐楼补发 `USER/CHARACTER_MESSAGE_RENDERED` 事件（移植自 ST-Chat-Jumper）：
+  `addOneMessage` 不走酒馆正常渲染管线，渲染类扩展（酒馆助手 JS-Slash-Runner）靠这些事件
+  挂载楼层内组件 iframe；补发事件可让代码块组件在跳转和滑动补齐后正常渲染，不残留裸代码块。
 - 恢复用 `reloadCurrentChat`，交还酒馆原生截断渲染。
 
 ## 调参

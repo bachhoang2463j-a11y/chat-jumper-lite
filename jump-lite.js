@@ -48,6 +48,12 @@
         return Math.max(min, Math.min(max, v));
     }
 
+    function idsInRange(start, end) {
+        const ids = [];
+        for (let i = start; i <= end; i++) ids.push(i);
+        return ids;
+    }
+
     // 从 DOM 实时读取当前已显示窗口边界，不维护易漂移的状态
     function getDisplayedRange() {
         const mesList = getChatEl()?.querySelectorAll(':scope > .mes');
@@ -121,6 +127,30 @@
         }
     }
 
+    // ------------------------- 楼层渲染事件补发 -------------------------
+    // addOneMessage 不走酒馆正常渲染管线（不发任何事件），而渲染类扩展
+    // （如酒馆助手 JS-Slash-Runner）完全靠 USER/CHARACTER_MESSAGE_RENDERED
+    // 事件驱动 iframe 挂载：不发事件时，其内部 runtime 记录仍指向已被
+    // replaceChildren 销毁的旧 DOM 节点，楼层内的前端组件（iframe）不会
+    // 被重建，用户会看到裸露的代码块。
+    // 楼层级事件的处理逻辑会先剔除该楼层的失效 runtime 再重扫 DOM，
+    // 因此逐楼补发即可恢复 iframe 渲染（与正常打印楼层时的行为一致）。
+    function notifyFloorsRendered(chat, ids) {
+        const ctx = getCtx();
+        const eventSource = ctx?.eventSource;
+        const types = ctx?.eventTypes;
+        if (!eventSource || !types?.USER_MESSAGE_RENDERED || !types?.CHARACTER_MESSAGE_RENDERED) return;
+
+        for (const id of ids) {
+            const type = chat[id]?.is_user ? types.USER_MESSAGE_RENDERED : types.CHARACTER_MESSAGE_RENDERED;
+            try {
+                void eventSource.emit(type, id);
+            } catch {
+                /* ignore */
+            }
+        }
+    }
+
     // ------------------------- 区间重建跳转 -------------------------
     async function jumpTo(floorInput) {
         const ctx = getCtx();
@@ -154,6 +184,7 @@
         for (let i = start; i <= end; i++) {
             ctx.addOneMessage(chat[i], { forceId: i, scroll: false, showSwipes: false });
         }
+        notifyFloorsRendered(chat, idsInRange(start, end));
         rangeActive = true;
         attachAutoFill();
 
@@ -244,6 +275,7 @@
             const prevAutoScroll = ctx.powerUserSettings?.auto_scroll_chat_to_bottom;
             if (ctx.powerUserSettings) ctx.powerUserSettings.auto_scroll_chat_to_bottom = false;
             await insertInRafChunks(ctx, ids, insertBeforeFirst);
+            notifyFloorsRendered(chat, ids);
             if (ctx.powerUserSettings) {
                 ctx.powerUserSettings.auto_scroll_chat_to_bottom = prevAutoScroll;
             }

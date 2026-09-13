@@ -71,8 +71,12 @@ window.SillyTavern = {
     chat,
     addOneMessage,
     powerUserSettings: { auto_scroll_chat_to_bottom: true },
-    eventSource: { emit: (t) => state.emitted.push(t) },
-    eventTypes: { MORE_MESSAGES_LOADED: 'more_messages_loaded' },
+    eventSource: { emit: (t, id) => state.emitted.push({ type: t, id }) },
+    eventTypes: {
+      MORE_MESSAGES_LOADED: 'more_messages_loaded',
+      USER_MESSAGE_RENDERED: 'user_message_rendered',
+      CHARACTER_MESSAGE_RENDERED: 'character_message_rendered',
+    },
     reloadCurrentChat: window.SillyTavern.reloadCurrentChat,
   }),
 };
@@ -105,19 +109,31 @@ function displayed() {
 function wrapper() { return document.getElementById('simplebar-wrapper'); }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// IAB 隐藏页 rAF/setTimeout 被钳制（约 1s/帧），固定睡眠不可靠，轮询等稳定
+async function waitFor(cond, timeout = 10000, interval = 100) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (cond()) return true;
+    await sleep(interval);
+  }
+  return cond();
+}
+
 async function clickJump() {
   document.getElementById('stcj-lite-button').click();
   await sleep(300);
 }
 async function wheelUp() {
+  const before = displayed().count;
   wrapper().dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true }));
-  await sleep(400);
+  await waitFor(() => displayed().count >= before + 5);
 }
 async function wheelDown() {
+  const before = displayed().count;
   wrapper().scrollTo({ top: wrapper().scrollHeight });
   await sleep(50);
   wrapper().dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true }));
-  await sleep(400);
+  await waitFor(() => displayed().count >= before + 5);
 }
 
 async function t1() {
@@ -139,7 +155,7 @@ async function t3() {
   const d = displayed();
   assert('首楼 = 495', d.first === 495, JSON.stringify(d));
   assert('共 10 楼', d.count === 10);
-  assert('触发 MORE_MESSAGES_LOADED', state.emitted.includes('more_messages_loaded'));
+  assert('触发 MORE_MESSAGES_LOADED', state.emitted.some(e => e.type === 'more_messages_loaded'));
 }
 async function t4() {
   log('--- T4 向下滑动补齐 5 楼 ---');
@@ -165,6 +181,24 @@ async function t6() {
   assert('恢复尾部 20 楼', d.count === 20 && d.last === 1999, JSON.stringify(d));
   assert('reloadCurrentChat 被调用', state.reloads >= 1);
 }
+async function t7() {
+  log('--- T7 楼层渲染事件补发（iframe 保活） ---');
+  state.emitted = [];
+  state.confirmAnswer = -1; state.popupAnswer = '500';
+  await clickJump();          // 窗口 500-504
+  await wheelUp();            // 补 495-499
+  await wheelDown();          // 补 505-509
+  let ok = true;
+  for (let id = 495; id <= 509; id++) {
+    const expected = chat[id].is_user ? 'user_message_rendered' : 'character_message_rendered';
+    const hits = state.emitted.filter(e => e.id === id && e.type === expected).length;
+    if (hits !== 1) { ok = false; log(`  楼层 ${id} 期望 1 次 ${expected}，实际 ${hits}`, 'fail'); }
+  }
+  assert('495-509 每楼恰好补发 1 次正确类型的渲染事件', ok);
+  const stray = state.emitted.filter(e => e.id != null && (e.id < 495 || e.id > 509));
+  assert('无区间外的楼层渲染事件', stray.length === 0, JSON.stringify(stray));
+  assert('补齐批次仍发 MORE_MESSAGES_LOADED', state.emitted.filter(e => e.type === 'more_messages_loaded').length >= 2);
+}
 
 async function runAll() {
   logEl.innerHTML = '';
@@ -174,7 +208,7 @@ async function runAll() {
   chatEl.replaceChildren();
   for (let i = CHAT_LEN - 20; i < CHAT_LEN; i++) chatEl.appendChild(renderMes(i));
   await sleep(200);
-  for (const t of [t1, t2, t3, t4, t5, t6]) {
+  for (const t of [t1, t2, t3, t4, t5, t6, t7]) {
     await t();
     await sleep(100);
   }
