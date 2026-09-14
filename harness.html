@@ -125,15 +125,25 @@ async function clickJump() {
 }
 async function wheelUp() {
   const before = displayed().count;
+  // 真实 Chrome 里 rAF 快，上一批补齐的 250ms 冷却可能尚未过期，先等它过去
+  await sleep(300);
   wrapper().dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true }));
   await waitFor(() => displayed().count >= before + 5);
 }
 async function wheelDown() {
   const before = displayed().count;
+  await sleep(300);
   wrapper().scrollTo({ top: wrapper().scrollHeight });
   await sleep(50);
   wrapper().dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true }));
   await waitFor(() => displayed().count >= before + 5);
+}
+// 模拟滚动链：改变 scrollTop 后派发 scroll 事件（真实浏览器随后还会补派一次原生
+// scroll 事件，届时基线已与当前值一致、delta=0 被忽略，不会双重补齐）
+function scrollStep(top) {
+  const w = wrapper();
+  w.scrollTop = top;
+  w.dispatchEvent(new Event('scroll'));
 }
 
 async function t1() {
@@ -200,6 +210,49 @@ async function t7() {
   assert('补齐批次仍发 MORE_MESSAGES_LOADED', state.emitted.filter(e => e.type === 'more_messages_loaded').length >= 2);
 }
 
+async function t8() {
+  log('--- T8 scroll 位置兜底（无滚轮事件，模拟代码块 iframe 上的滚动链） ---');
+  // 5 楼 × 120px 可能不满一屏导致 scrollTop 无法移动；wrapper 是 flex:1 子项，
+  // 需同时禁用 flex 才能让固定高度生效，制造出滚动空间
+  const w = wrapper();
+  const prevHeight = w.style.height;
+  const prevFlex = w.style.flex;
+  w.style.flex = 'none';
+  w.style.height = '300px';
+  try {
+    state.confirmAnswer = -1; state.popupAnswer = '500';
+    state.emitted = [];
+    await clickJump();          // 窗口 500-504
+    // 首次 scroll 建立方向基线（delta=0 被忽略）
+    scrollStep(150);
+    await sleep(100);
+    // 向下滚到底 → scroll 兜底补 505-509
+    const beforeDown = displayed().last;
+    scrollStep(w.scrollHeight);
+    const okDown = await waitFor(() => displayed().last >= beforeDown + 5);
+    const d1 = displayed();
+    assert('scroll 贴底触发向下补齐', okDown && d1.last === 509 && d1.count === 10, JSON.stringify(d1));
+    // 向上滚到顶 → scroll 兜底补 495-499
+    const beforeUp = displayed().first;
+    scrollStep(0);
+    const okUp = await waitFor(() => displayed().first <= beforeUp - 5);
+    const d2 = displayed();
+    assert('scroll 贴顶触发向上补齐', okUp && d2.first === 495 && d2.count === 15, JSON.stringify(d2));
+    assert('scroll 补齐仍发 MORE_MESSAGES_LOADED',
+      state.emitted.filter(e => e.type === 'more_messages_loaded').length >= 2);
+    // 重建钳位保护：滚动到顶状态下再次跳转，replaceChildren 引发的 scrollTop 钳位
+    // 不应被误判为“向上滚动”而自动补上方楼层
+    state.popupAnswer = '600';
+    await clickJump();          // 窗口 600-604
+    await sleep(1200);          // 留出钳位 scroll 事件派发的时间窗
+    const d3 = displayed();
+    assert('跳转重建后不因 scrollTop 钳位误触发补齐', d3.first === 600 && d3.count === 5, JSON.stringify(d3));
+  } finally {
+    w.style.height = prevHeight;
+    w.style.flex = prevFlex;
+  }
+}
+
 async function runAll() {
   logEl.innerHTML = '';
   state.emitted = []; state.reloads = 0;
@@ -208,7 +261,7 @@ async function runAll() {
   chatEl.replaceChildren();
   for (let i = CHAT_LEN - 20; i < CHAT_LEN; i++) chatEl.appendChild(renderMes(i));
   await sleep(200);
-  for (const t of [t1, t2, t3, t4, t5, t6, t7]) {
+  for (const t of [t1, t2, t3, t4, t5, t6, t7, t8]) {
     await t();
     await sleep(100);
   }

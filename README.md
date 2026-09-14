@@ -22,6 +22,9 @@
 - 跳转/补齐插楼后逐楼补发 `USER/CHARACTER_MESSAGE_RENDERED` 事件（移植自 ST-Chat-Jumper）：
   `addOneMessage` 不走酒馆正常渲染管线，渲染类扩展（酒馆助手 JS-Slash-Runner）靠这些事件
   挂载楼层内组件 iframe；补发事件可让代码块组件在跳转和滑动补齐后正常渲染，不残留裸代码块。
+- 补齐触发以滚轮/触屏意图为主、scroll 位置兜底：代码块被渲染成 iframe 后，悬停其上的
+  滚轮/触屏事件不冒泡出 iframe，但浏览器滚动链仍会滚动聊天容器并派发 scroll 事件，
+  按“滚动方向 + 贴边位置”兜底触发，避免区间末尾是代码块组件楼时向下滑动冻结。
 - 恢复用 `reloadCurrentChat`，交还酒馆原生截断渲染。
 
 ## 调参

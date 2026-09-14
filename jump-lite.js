@@ -25,6 +25,8 @@
     let filling = false;          // 补齐批次进行中（锁）
     let lastFillTs = 0;           // 上次补齐时间（冷却）
     let touchStartY = null;       // 触屏方向探测
+    let lastScrollTop = null;     // scroll 兜底的方向基线（null = 未建立）
+    let scrollRecheckTimer = null; // 冷却死角的一次性复查定时器
     let cleanupFns = [];          // pagehide / 脚本重载时的清理回调
 
     // ------------------------- 基础工具 -------------------------
@@ -180,6 +182,10 @@
         const start = target;
         const end = Math.min(target + WINDOW_SIZE - 1, maxId);
 
+        // 区间重建清空 #chat 会把 scrollTop 钳到 0 并派发 scroll 事件：
+        // 先重置方向基线并取消待复查，避免被误判为“向上滚动”而立即向上补齐
+        resetScrollTracking();
+
         chatEl.replaceChildren();
         for (let i = start; i <= end; i++) {
             ctx.addOneMessage(chat[i], { forceId: i, scroll: false, showSwipes: false });
@@ -199,6 +205,9 @@
             if (scrollEl) scrollEl.scrollTop = target <= 0 ? 0 : scrollEl.scrollHeight;
             toast(`已显示楼层区间 ${start}-${end}，但未能定位高亮目标楼`, 'warning');
         }
+        // 定位滚动同样会派发 scroll 事件（钳位后常为向上），重置基线
+        // 避免被当作“用户向上滚动”而在跳转后立即触发补齐
+        resetScrollTracking();
 
         if (power) power.auto_scroll_chat_to_bottom = prevAutoScroll;
     }
@@ -275,6 +284,9 @@
             const prevAutoScroll = ctx.powerUserSettings?.auto_scroll_chat_to_bottom;
             if (ctx.powerUserSettings) ctx.powerUserSettings.auto_scroll_chat_to_bottom = false;
             await insertInRafChunks(ctx, ids, insertBeforeFirst);
+            // 向上补齐的 scrollTop 补偿会尾随派发 scroll 事件（可能在 filling
+            // 解锁后才到达），重置基线避免被误判为新的滚动意图
+            if (insertBeforeFirst) resetScrollTracking();
             notifyFloorsRendered(chat, ids);
             if (ctx.powerUserSettings) {
                 ctx.powerUserSettings.auto_scroll_chat_to_bottom = prevAutoScroll;
@@ -289,7 +301,7 @@
     }
 
     // 用滚轮/触屏方向作为“加载意图”，贴边才触发；
-    // 不监听 scroll 事件，避免补齐自身的 scrollTop 补偿形成反馈循环
+    // 光标位于代码块 iframe 上时事件无法冒泡到本页，由 onScroll 按滚动位置兜底
     function onWheel(event) {
         if (!rangeActive || filling) return;
         const scrollEl = getScrollEl();
@@ -321,6 +333,53 @@
         }
     }
 
+    // ------------------------- scroll 位置兜底 -------------------------
+    // 酒馆助手把代码块渲染成 iframe 后，光标悬停其上时的滚轮/触屏事件全部
+    // 派发进 iframe 自身文档、不会冒泡到本页；但浏览器滚动链仍会滚动聊天容器
+    // 并派发 scroll 事件，故按“滚动方向 + 贴边位置”兜底触发补齐。
+    // 向上补齐的 scrollTop 补偿发生在 filling 锁内，尾随 scroll 事件由冷却拦下，无反馈循环。
+    function isNearEdge(scrollEl, direction) {
+        if (direction === 'up') return scrollEl.scrollTop <= EDGE_THRESHOLD;
+        return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= EDGE_THRESHOLD;
+    }
+
+    function onScroll() {
+        const scrollEl = getScrollEl();
+        if (!scrollEl) return;
+        const top = scrollEl.scrollTop;
+        const delta = lastScrollTop === null ? 0 : top - lastScrollTop;
+        lastScrollTop = top; // 补齐期间的补偿滚动也在此刷新基线，避免之后方向误判
+        if (!rangeActive || filling || Math.abs(delta) < 1) return;
+        const direction = delta > 0 ? 'down' : 'up';
+        if (!isNearEdge(scrollEl, direction)) return;
+        if (Date.now() - lastFillTs < COOLDOWN_MS) {
+            scheduleScrollRecheck(direction);
+            return;
+        }
+        fillEdge(direction);
+    }
+
+    // 惯性滚动整体落在冷却窗口内、停在边缘后不再产生 scroll 事件的死角：
+    // 冷却到期后按触发时的方向复查一次贴边状态
+    function scheduleScrollRecheck(direction) {
+        if (scrollRecheckTimer !== null) return;
+        scrollRecheckTimer = setTimeout(() => {
+            scrollRecheckTimer = null;
+            const scrollEl = getScrollEl();
+            if (scrollEl && rangeActive && !filling && isNearEdge(scrollEl, direction)) {
+                fillEdge(direction);
+            }
+        }, COOLDOWN_MS + 30);
+    }
+
+    function resetScrollTracking() {
+        lastScrollTop = null;
+        if (scrollRecheckTimer !== null) {
+            clearTimeout(scrollRecheckTimer);
+            scrollRecheckTimer = null;
+        }
+    }
+
     let autoFillAttached = false;
 
     function attachAutoFill() {
@@ -330,6 +389,7 @@
         scrollEl.addEventListener('wheel', onWheel, { passive: true });
         scrollEl.addEventListener('touchstart', onTouchStart, { passive: true });
         scrollEl.addEventListener('touchmove', onTouchMove, { passive: true });
+        scrollEl.addEventListener('scroll', onScroll, { passive: true });
         autoFillAttached = true;
         cleanupFns.push(detachAutoFill);
     }
@@ -341,8 +401,10 @@
             scrollEl.removeEventListener('wheel', onWheel);
             scrollEl.removeEventListener('touchstart', onTouchStart);
             scrollEl.removeEventListener('touchmove', onTouchMove);
+            scrollEl.removeEventListener('scroll', onScroll);
         }
         autoFillAttached = false;
+        resetScrollTracking();
     }
 
     // ------------------------- 恢复完整显示 -------------------------
